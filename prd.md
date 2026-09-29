@@ -36,12 +36,14 @@ Three customer expectations define success:
 
 ## 3. Scope
 
-### In scope
+### In scope — Stage 1
 - **Availability management (UI).** A team lead defines each agent's timezone and recurring weekly working hours for their company, and keeps them up to date.
+- **Workload limits (UI).** A team lead sets how much active work an agent may hold before they stop receiving new tickets, with a company-wide default and per-agent overrides.
+- **Assignment (API).** Given a `company_id` and `ticket_id`, return who on that company's team should get the ticket, or indicate that no eligible agent is available, along with the reason for that decision.
+
+### In scope — Later stages
 - **Coverage visibility (UI).** A team lead defines the hours their company needs covered and can see where the team's schedule leaves those hours unstaffed or under-staffed.
-- **Workload limits.** A team lead can set how much active work an agent may hold before they stop receiving new tickets.
-- **Assignment (API).** Given a `company_id` and `ticket_id`, return who on that company's team should get the ticket, or indicate that no eligible agent is available.
-- **Explanation.** Each assignment result says why that agent was chosen, and why others were not. A team lead can look this up later.
+- **Explanation lookup (UI).** A team lead can look up, after the fact, why a given ticket was assigned the way it was.
 
 ### Out of scope
 - Login, roles and permissions: whoever uses the UI may do everything.
@@ -72,12 +74,12 @@ Three customer expectations define success:
 
 **What "too much active work" means**
 
-10. We do not learn when tickets are resolved. So an agent's active work is approximated as *the tickets we assigned to them within a recent time window* (default 8 hours, set per company). This is a deliberate simplification.
+10. We do not learn when tickets are resolved. So an agent's active work is approximated as *the tickets we assigned to them within a recent time window* (default 8 hours, set per company). This is a deliberate simplification: a ticket that is still genuinely open after the window falls out of the count, so that agent can receive new tickets while it remains unresolved. We accept this blind spot rather than track resolution.
 11. Each agent has a limit on active tickets. There is a company-wide default, which can be changed for individual agents. At the limit, they receive no new tickets.
 
 **What "fair" means**
 
-12. Fair means balancing current workload relative to each agent's limit, not ticket count over all time. Among agents who can take the ticket, the least loaded one gets it. When loads are equal, the work rotates so the same person isn't always picked first.
+12. Fair means balancing current workload relative to each agent's limit, not ticket count over all time. Concretely, each eligible agent's load is `active tickets ÷ limit`; the ticket goes to whoever has the lowest ratio. When ratios are tied, the work rotates so the same person isn't always picked first.
 13. The same situation always produces the same decision, so outcomes can be explained and reproduced.
 
 **Behaviour at the edges**
