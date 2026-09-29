@@ -36,14 +36,12 @@ Three customer expectations define success:
 
 ## 3. Scope
 
-### In scope — Stage 1
+### In scope
 - **Availability management (UI).** A team lead defines each agent's timezone and recurring weekly working hours for their company, and keeps them up to date.
-- **Workload limits (UI).** A team lead sets how much active work an agent may hold before they stop receiving new tickets, with a company-wide default and per-agent overrides.
-- **Assignment (API).** Given a `company_id` and `ticket_id`, return who on that company's team should get the ticket, or indicate that no eligible agent is available, along with the reason for that decision.
-
-### In scope — Later stages
 - **Coverage visibility (UI).** A team lead defines the hours their company needs covered and can see where the team's schedule leaves those hours unstaffed or under-staffed.
-- **Explanation lookup (UI).** A team lead can look up, after the fact, why a given ticket was assigned the way it was.
+- **Workload limits.** A team lead can set how much active work an agent may hold before they stop receiving new tickets.
+- **Assignment (API).** Given a `company_id` and `ticket_id`, return who on that company's team should get the ticket, or indicate that no eligible agent is available.
+- **Explanation.** Each assignment result says why that agent was chosen, and why others were not. A team lead can look this up later.
 
 ### Out of scope
 - Login, roles and permissions: whoever uses the UI may do everything.
