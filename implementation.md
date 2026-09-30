@@ -162,18 +162,17 @@ Runs inside a single DB transaction to keep it race-safe (see §5):
 
 Coverage requirements are defined in the **company's** timezone; agent shifts are defined in each **agent's own** timezone (prd.md assumptions 7 & 10). A weekly recurring local time doesn't convert to a fixed offset between two timezones year-round (DST transitions don't line up), so there's no single canonical "weekly grid" that's valid indefinitely.
 
-**Design decision:** gaps are computed over a concrete date range (default: the next 7 calendar days), not an abstract recurring week:
-1. Expand every active agent's weekly shifts into concrete UTC intervals for each date in the range (applying that date's actual DST offset in the agent's zone), then **merge each agent's own intervals** so any overlapping or adjacent shifts collapse into a single span per agent (an agent covering 09:00–13:00 and 12:00–17:00 the same day is one 09:00–17:00 presence, not two).
-2. Expand the company's weekly coverage requirements into concrete UTC intervals the same way, in the company's zone.
-3. For each requirement interval, count how many **distinct agents'** merged intervals overlap it at each point (never raw shift-interval count — one agent can never satisfy more than 1 of `minAgents`); any sub-interval where that count is below `minAgents` is reported as a gap, with its start/end returned as offset-bearing timestamps in the company's local time (e.g. `2026-11-01T01:30:00-04:00`, not a bare `01:30`), so a reader can tell which side of a DST transition an endpoint falls on.
+**Design decision:** gaps are computed over a concrete date range (default: the next 7 calendar days), not an abstract recurring week, using a **minute-sweep that reuses the §3 eligibility predicate** rather than pre-converting local shift/requirement boundaries into UTC intervals:
 
-This is a real design tradeoff worth flagging for review: it means "coverage gaps" is always a report over a specific window, not a single static weekly picture — the UI should present it as a date-ranged report (e.g., "gaps in the next 7 days") rather than a fixed weekly calendar.
+1. Step through the date range one real UTC minute at a time (a plain, unambiguous timeline — no local time is involved in choosing which minutes exist).
+2. For each minute, and for each active agent, run the *same* "is this agent on shift at this instant" check defined in §3 step 3 (convert this real instant to the agent's local weekday + minute-of-day and test it against their shifts). This is a literal reuse of that function, not a re-implementation — it's always a safe UTC→local conversion, so it's never ambiguous, in either agent-shift or company-requirement terms.
+3. Run the equivalent check against the company's coverage requirements (same predicate shape, company timezone instead of agent timezone) to know which minutes need coverage and with what `minAgents`.
+4. For each such minute, count how many **distinct agents** are on shift (an agent with two overlapping shift entries — §1 note — still counts once). Any minute where that count is below `minAgents` is a gap-minute.
+5. Merge consecutive gap-minutes into reported intervals, with start/end emitted as real UTC instants formatted with an explicit offset in the company's local time (e.g. `2026-11-01T01:30:00-04:00`).
 
-**DST disambiguation.** Step 1 and step 2 both convert a local wall-clock boundary (weekday + minute-of-day) on a specific date into a UTC instant — a direction that can be ambiguous across a DST transition, unlike the assignment eligibility check in §3, which only ever converts the other way (a real, unambiguous UTC "now" into local time). Two cases need an explicit rule:
-- **Fall-back (a local time occurs twice).** Resolve to the *earlier* of the two UTC instants.
-- **Spring-forward (a local time doesn't exist).** Resolve forward to the next valid instant after the gap.
+Because shifts and requirements are only ever defined at minute granularity, sweeping real UTC minutes is **exact**, not an approximation — every real minute is checked exactly once. This is also why it needs no DST disambiguation policy at all: a fall-back night's repeated local hour corresponds to two distinct real UTC minutes for each wall-clock reading, so both get checked (and both correctly count as covered if the shift includes that wall-clock time); a spring-forward night's skipped local hour simply never occurs as a real UTC minute, so it's naturally never checked and never miscounted. This is a stronger property than picking an "earlier/later" convention for an ambiguous instant — it avoids the ambiguity rather than resolving it, and stays provably consistent with assignment behaviour since both paths share the same predicate.
 
-Both directions use a timezone-aware library (e.g. Luxon) rather than fixed-offset arithmetic, so this rule is applied consistently.
+This is a real design tradeoff worth flagging for review: it means "coverage gaps" is always a report over a specific window, not a single static weekly picture — the UI should present it as a date-ranged report (e.g., "gaps in the next 7 days") rather than a fixed weekly calendar. It also means computation cost scales with minutes-in-range × agent count (for the default 7-day window, ~10,080 minutes per agent) rather than with shift count — trivial for local/dev-scale data, but worth knowing if the range or team size ever grows large.
 
 ---
 
@@ -196,8 +195,7 @@ Beyond prd.md §4 "Behaviour at the edges" (15–17), implementation-level cases
 - **Concurrent assign calls for the same new ticket.** The composite primary key on `Ticket` plus the transaction in §3 means only one request wins the insert; the other reads back the same persisted decision instead of racing to pick a different agent.
 - **Retrying `assign` after a previous "no eligible agent" result.** Re-evaluated fresh every time (§3 step 1) — capacity freeing up or a shift starting will change the outcome. Only a successful assignment is frozen; a failed attempt's `AssignmentDecision` row is overwritten in place on each retry, so explanation lookup always shows the most recent attempt.
 - **Shift or coverage window crossing midnight.** Handled uniformly by the `endMinute <= startMinute` wrap convention in both `AvailabilityShift` and `CoverageRequirement`.
-- **DST transitions during eligibility checks.** Never computed as a fixed offset — "is this agent on shift" always asks "what's this agent's local wall-clock time right now," an unambiguous UTC→local conversion, so DST is handled by the tz database, not by application logic.
-- **DST transitions during coverage-gap expansion.** The opposite, ambiguous local→UTC direction — resolved by the explicit rule in §4 (earlier instant for a repeated local time, next valid instant for a skipped one).
+- **DST transitions, both in eligibility checks and coverage-gap expansion.** Both only ever convert a real UTC instant to local time (never the reverse), which is always unambiguous — §4's minute-sweep reuses the exact §3 predicate for this reason. A fall-back night's repeated local hour is naturally checked twice (once per real occurrence); a spring-forward night's skipped local hour is naturally never checked at all. No disambiguation policy is needed because the ambiguous direction (local→UTC) is never used.
 - **An agent with two overlapping shift entries.** Merged into one presence interval per agent before coverage counting (§4 step 1), so one agent can never count as two toward `minAgents`.
 - **Agent with no configured shifts.** Always off-shift; not an error, just never eligible.
 - **Ticket limit of 0.** Agent is always excluded before ratio math (avoids a 0/0 ratio).
@@ -214,7 +212,7 @@ Beyond prd.md §4 "Behaviour at the edges" (15–17), implementation-level cases
 - Ratio + tie-break: distinct ratios pick the lowest; equal ratios fall back to `lastAssignedAt`; fully-tied agents fall back to `agentId` (rerun the same inputs twice, assert identical output — assumption 13).
 - Coverage gap expansion: a requirement fully covered, partially covered, uncovered, and one that wraps past midnight.
 - Coverage double-counting: one agent with two overlapping shift entries against a `minAgents: 2` requirement still reports a gap (must not be satisfied by one person).
-- Coverage DST expansion: a shift/requirement boundary that falls on a fall-back local time (occurs twice) resolves to the earlier instant; one that falls on a spring-forward local time (doesn't exist) resolves to the next valid instant.
+- Coverage DST expansion: a shift covering a fall-back night's repeated local hour is reported as covered during **both** real UTC occurrences of that hour, not just one; a shift referencing a spring-forward night's skipped local hour contributes no coverage for that (nonexistent) window and doesn't error or produce a negative-length interval.
 
 **Integration — API**
 - Assign: happy path; no eligible agent (all three exclusion reasons represented); repeated call for the same ticket returns the identical stored decision.
